@@ -1,0 +1,38 @@
+// Definir el rango temporal de interés
+var startDate = '2025-01-01';
+var endDate = '2025-04-30';
+
+// Cargar el dataset CAMS global reanalysis EAC4
+var cams = ee.ImageCollection("ECMWF/CAMS/NRT")
+              .filterDate(startDate, endDate)
+              .select('particulate_matter_d_less_than_25_um_surface');  // PM2.5 superficial
+
+// Promediar los datos mensual
+var monthlyPM25 = ee.ImageCollection(
+  ee.List.sequence(1, 12).map(function(month) {
+    month = ee.Number(month);
+    var monthly = cams.filter(ee.Filter.calendarRange(month, month, 'month'));
+    
+    return monthly.mean()
+      .set('month', month)
+      .set('system:time_start', ee.Date(startDate).advance(month.subtract(1), 'month'));
+  })
+);
+
+// Visualizar un mes específico
+var jan = monthlyPM25.filter(ee.Filter.eq('month', 2)).first();
+Map.centerObject(geometry, 5);
+Map.addLayer(jan.clip(geometry), {
+  min: 0, max: 100,
+  palette: ['white', 'yellow', 'orange', 'red', 'purple', 'brown']
+}, 'PM2.5 Enero');
+
+// Exportar a Google Drive
+Export.image.toDrive({
+  image: jan.clip(geometry),
+  description: 'PM25_Febrero_2025',
+  folder: 'GEE_exports',
+  scale: 10000,
+  region: geometry,
+  maxPixels: 1e13
+});

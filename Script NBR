@@ -1,0 +1,82 @@
+// Función para enmascarar nubes y sombras usando QA60 (1 banda)
+function maskCloudAndShadows(image) {
+  var cloudMask = image.select('QA60').toInt().bitwiseAnd(1 << 30).eq(0); // Máscara binaria
+  return image.updateMask(cloudMask);
+}
+
+// Mosaicos sin nubes y sombras
+function crearMosaico(inicio, fin) {
+  return ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(inicio, fin)
+    .filterBounds(geometry)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+    .map(maskCloudAndShadows)
+    .median()
+    .clip(geometry);
+}
+
+// Función para calcular el NBR
+function calcularNBR(img) {
+  var B8 = img.select('B8');
+  var B12 = img.select('B12');
+  return B8.subtract(B12).divide(B8.add(B12)).rename('NBR');
+}
+
+// Crear mosaicos pre y post fuego sin nubes
+var mosaico_pre = crearMosaico('2025-01-01', '2025-01-31');
+var mosaico_post = crearMosaico('2025-02-01', '2025-02-28');
+
+// Calcular NBR antes y después del incendio
+var nbr_previo = calcularNBR(mosaico_pre);
+var nbr_posterior = calcularNBR(mosaico_post);
+
+// Calcular ΔNBR (diferencia de NBR)
+var nbr_Total = nbr_previo.subtract(nbr_posterior).rename('ΔNBR');
+
+// Clasificación de severidad según USGS
+var fireSeverity = nbr_Total.expression(
+  "(b(0) > 0.27) ? 3" +  // Quema severa
+  ": (b(0) > 0.1) ? 2" +  // Quema moderada
+  ": 0",                 
+  { "b(0)": nbr_Total }
+).rename('Fire_Severity');
+
+// Generar máscara de nubes
+var cloudMask = mosaico_post.select('QA60').toInt().bitwiseAnd(1 << 30).eq(0);
+
+// Filtrar solo quemas severas
+var severeFires = fireSeverity.updateMask(fireSeverity.gt(3))
+  .updateMask(cloudMask); // Aplica la máscara correctamente con 1 sola banda
+
+// Paleta de colores para visualización
+var firePalette = ['white', 'orange', 'red'];
+
+// Visualización de capas
+Map.centerObject(geometry, 10);
+Map.addLayer(mosaico_pre, {min: 0, max: 5000, bands: ['B12', 'B8A', 'B4']}, 'Mosaico Previo');
+Map.addLayer(nbr_previo, {min: -1, max: 1, palette: ['blue', 'white', 'red']}, 'NBR Previo');
+Map.addLayer(mosaico_post, {min: 0, max: 5000, bands: ['B12', 'B8A', 'B4']}, 'Mosaico Posterior');
+Map.addLayer(nbr_posterior, {min: -1, max: 1, palette: ['blue', 'white', 'red']}, 'NBR Posterior');
+Map.addLayer(fireSeverity, {min: 0, max: 3, palette: firePalette}, 'Clasificación de Severidad');
+
+// Exportar solo quemas severas
+Export.image.toDrive({
+  image: severeFires,
+  description: 'Severe_Fires_2025',
+  folder: 'NBR_2025',
+  fileNamePrefix: 'Severe_Fires',
+  region: geometry,
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// Exportar el mosaico posterior
+Export.image.toDrive({
+  image: mosaico_post,
+  description: 'Mosaico_Post_2025',
+  folder: 'NBR_2025',
+  fileNamePrefix: 'Mosaico_Post',
+  region: geometry,
+  scale: 10,
+  maxPixels: 1e13
+});
